@@ -1,0 +1,252 @@
+--[[
+MountPhoenixTeleportReady.lua
+Satu file siap pakai untuk Map "MountPhoenix" — Teleport antar checkpoint (touch-to-teleport)
+Fungsi:
+  - Jika Workspace.MountPhoenix.Checkpoints tidak ada -> otomatis buat contoh 4 checkpoint
+  - Saat pemain MENYENTUH checkpoint -> server teleport ke checkpoint berikutnya
+  - Simpan checkpoint terakhir di DataStore (fallback ke memory di Studio / jika gagal)
+  - Server-authoritative teleport (aman)
+
+Letakkan file ini sebagai Script di ServerScriptService.
+--]]
+
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local RunService = game:GetService("RunService")
+
+local DATASTORE_NAME = "MountPhoenix_LastCheckpoint_v1"
+
+-- Cari folder MountPhoenix > Checkpoints; jika tidak ada, buat contoh
+local function ensureCheckpoints()
+    local mount = workspace:FindFirstChild("MountPhoenix")
+    if not mount then
+        mount = Instance.new("Folder")
+        mount.Name = "MountPhoenix"
+        mount.Parent = workspace
+        warn("[MountPhoenixTeleport] Folder 'MountPhoenix' tidak ditemukan — membuat contoh folder dan checkpoints.")
+    end
+
+    local cps = mount:FindFirstChild("Checkpoints")
+    if not cps then
+        cps = Instance.new("Folder")
+        cps.Name = "Checkpoints"
+        cps.Parent = mount
+
+        -- buat 4 checkpoint contoh berbentuk Part, supaya script langsung bisa dijalankan
+        local basePos = Vector3.new(0, 5, 0)
+        local gap = 40
+        for i = 1, 4 do
+            local p = Instance.new("Part")
+            p.Name = "Checkpoint" .. tostring(i)
+            p.Size = Vector3.new(8,1,8)
+            p.Position = basePos + Vector3.new(0, 0, (i-1) * gap)
+            p.Anchored = true
+            p.CanCollide = false
+            p.Transparency = 0.3
+            p.BrickColor = BrickColor.new("Bright orange")
+            p.Parent = cps
+
+            -- label (BillboardGui) agar mudah dilihat di Studio / playtest
+            local bg = Instance.new("BillboardGui", p)
+            bg.Size = UDim2.new(0,120,0,40)
+            bg.AlwaysOnTop = true
+            local txt = Instance.new("TextLabel", bg)
+            txt.Size = UDim2.new(1,0,1,0)
+            txt.BackgroundTransparency = 1
+            txt.TextScaled = true
+            txt.Text = "Checkpoint ".. tostring(i)
+            txt.TextColor3 = Color3.new(1,1,1)
+        end
+
+        print("[MountPhoenixTeleport] Contoh 4 checkpoint dibuat di Workspace.MountPhoenix.Checkpoints.")
+    end
+
+    return mount, cps
+end
+
+local mountFolder, checkpointsFolder = ensureCheckpoints()
+
+-- Ambil daftar checkpoint (terurut berdasarkan nama)
+local function getOrderedCheckpoints(folder)
+    local parts = {}
+    for _, v in ipairs(folder:GetChildren()) do
+        if v:IsA("BasePart") then
+            table.insert(parts, v)
+        end
+    end
+    table.sort(parts, function(a,b) return a.Name < b.Name end)
+    return parts
+end
+
+local checkpoints = getOrderedCheckpoints(checkpointsFolder)
+if #checkpoints == 0 then
+    warn("[MountPhoenixTeleport] Tidak menemukan checkpoint valid di folder. Buatlah BasePart bernama Checkpoint1, Checkpoint2, ...")
+end
+
+-- DataStore: fallback memory table jika Get/Set async gagal (mis. di Studio)
+local useDatastore = true
+local ds
+local memoryStore = {}
+
+local function initDataStore()
+    local success, storeOrErr = pcall(function()
+        return DataStoreService:GetDataStore(DATASTORE_NAME)
+    end)
+    if success and storeOrErr then
+        ds = storeOrErr
+        useDatastore = true
+        print("[MountPhoenixTeleport] DataStore diinisialisasi.")
+    else
+        useDatastore = false
+        warn("[MountPhoenixTeleport] DataStore tidak dapat diinisialisasi. Menggunakan penyimpanan sementara (memory) — data tidak akan persist di publish.")
+    end
+end
+
+initDataStore()
+
+-- Simpan dan load helper
+local function savePlayerCheckpoint(userId, index)
+    if not index or type(index) ~= "number" then return false end
+    if useDatastore and ds then
+        local ok, err = pcall(function()
+            ds:SetAsync(tostring(userId), index)
+        end)
+        if not ok then
+            warn("[MountPhoenixTeleport] Gagal SetAsync:", err)
+            memoryStore[userId] = index
+            return false
+        end
+        return true
+    else
+        memoryStore[userId] = index
+        return true
+    end
+end
+
+local function loadPlayerCheckpoint(userId)
+    if useDatastore and ds then
+        local ok, result = pcall(function()
+            return ds:GetAsync(tostring(userId))
+        end)
+        if ok and type(result) == "number" then
+            return result
+        else
+            return nil
+        end
+    else
+        return memoryStore[userId]
+    end
+end
+
+-- Teleport helper (server-side)
+local TELEPORT_Y_OFFSET = 3
+local function teleportPlayerToCheckpoint(player, checkpointPart)
+    if not player or not player.Character or not checkpointPart or not checkpointPart:IsA("BasePart") then return false end
+    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    -- efek sederhana: particle pada posisi lama
+    local effect = Instance.new("Part")
+    effect.Anchored = true
+    effect.CanCollide = false
+    effect.Transparency = 1
+    effect.Position = hrp.Position
+    effect.Parent = workspace
+
+    local pe = Instance.new("ParticleEmitter")
+    pe.Texture = "rbxassetid://4830978126"
+    pe.Lifetime = NumberRange.new(0.25)
+    pe.Rate = 200
+    pe.Speed = NumberRange.new(0)
+    pe.VelocitySpread = 180
+    pe.Parent = effect
+    pe:Emit(30)
+
+    task.delay(0.35, function()
+        if effect and effect.Parent then effect:Destroy() end
+    end)
+
+    -- teleport
+    hrp.CFrame = checkpointPart.CFrame + Vector3.new(0, TELEPORT_Y_OFFSET, 0)
+    return true
+end
+
+-- Cari index checkpoint dari part
+local function findCheckpointIndex(part)
+    for i, cp in ipairs(checkpoints) do
+        if cp == part then return i end
+    end
+    return nil
+end
+
+-- Debounce table per (playerId, part)
+local touchDebounce = {}
+
+-- Saat pemain menyentuh checkpoint -> teleport ke next checkpoint, simpan index
+local function connectTouchHandlers()
+    -- refresh checkpoints (jika ada perubahan)
+    checkpoints = getOrderedCheckpoints(checkpointsFolder)
+
+    for idx, part in ipairs(checkpoints) do
+        -- disconnect / avoid multiple connects if script rerun? For simplicity, create a new connection each run.
+        part.Touched:Connect(function(hit)
+            local char = hit:FindFirstAncestorOfClass("Model")
+            if not char then return end
+            local player = Players:GetPlayerFromCharacter(char)
+            if not player then return end
+
+            local key = tostring(player.UserId) .. ":" .. tostring(part:GetDebugId())
+            if touchDebounce[key] and (time() - touchDebounce[key]) < 1 then
+                return
+            end
+            touchDebounce[key] = time()
+
+            -- compute next index (wrap around)
+            local nextIndex = idx + 1
+            if nextIndex > #checkpoints then nextIndex = 1 end
+            local target = checkpoints[nextIndex]
+            if target then
+                local ok = teleportPlayerToCheckpoint(player, target)
+                if ok then
+                    savePlayerCheckpoint(player.UserId, nextIndex)
+                    print(("[MountPhoenixTeleport] %s touched %s => teleported to %s"):format(player.Name, part.Name, target.Name))
+                end
+            end
+        end)
+    end
+end
+
+-- Saat player spawn: telepor ke checkpoint terakhir jika ada, lalu connect Touched handlers (handlers sudah global)
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function(character)
+        -- tunggu HumanoidRootPart
+        local hrp = character:WaitForChild("HumanoidRootPart", 10)
+        if not hrp then return end
+
+        -- refresh checkpoints (jika pembuat map menambah/remove saat runtime)
+        checkpointsFolder = workspace:FindFirstChild("MountPhoenix") and workspace.MountPhoenix:FindFirstChild("Checkpoints") or checkpointsFolder
+        checkpoints = getOrderedCheckpoints(checkpointsFolder)
+
+        -- jika ada saved index, teleport ke sana
+        local saved = loadPlayerCheckpoint(player.UserId)
+        if saved and type(saved) == "number" and saved >= 1 and saved <= #checkpoints then
+            local cp = checkpoints[saved]
+            if cp then
+                -- beri sedikit delay agar spawn animation/physics settle
+                task.wait(0.2)
+                local succeeded = teleportPlayerToCheckpoint(player, cp)
+                if succeeded then
+                    print(("[MountPhoenixTeleport] %s restored to checkpoint %s"):format(player.Name, cp.Name))
+                end
+            end
+        else
+            -- jika tidak ada saved, optionally we can save current spawn as index 1 if wants
+            -- savePlayerCheckpoint(player.UserId, 1)
+        end
+    end)
+end)
+
+-- Connect touch handlers now
+connectTouchHandlers()
+
+print("[MountPhoenixTeleport] Sistem siap. Checkpoint count:", #checkpoints)
