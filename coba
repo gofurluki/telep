@@ -1,22 +1,9 @@
---[[
-MountPhoenixTeleportReady.lua
-Satu file siap pakai untuk Map "MountPhoenix" — Teleport antar checkpoint (touch-to-teleport)
-Fungsi:
-  - Jika Workspace.MountPhoenix.Checkpoints tidak ada -> otomatis buat contoh 4 checkpoint
-  - Saat pemain MENYENTUH checkpoint -> server teleport ke checkpoint berikutnya
-  - Simpan checkpoint terakhir di DataStore (fallback ke memory di Studio / jika gagal)
-  - Server-authoritative teleport (aman)
-
-Letakkan file ini sebagai Script di ServerScriptService.
---]]
-
 local Players = game:GetService("Players")
 local DataStoreService = game:GetService("DataStoreService")
 local RunService = game:GetService("RunService")
 
 local DATASTORE_NAME = "MountPhoenix_LastCheckpoint_v1"
 
--- Cari folder MountPhoenix > Checkpoints; jika tidak ada, buat contoh
 local function ensureCheckpoints()
     local mount = workspace:FindFirstChild("MountPhoenix")
     if not mount then
@@ -32,7 +19,6 @@ local function ensureCheckpoints()
         cps.Name = "Checkpoints"
         cps.Parent = mount
 
-        -- buat 4 checkpoint contoh berbentuk Part, supaya script langsung bisa dijalankan
         local basePos = Vector3.new(0, 5, 0)
         local gap = 40
         for i = 1, 4 do
@@ -42,7 +28,7 @@ local function ensureCheckpoints()
             p.Position = basePos + Vector3.new(0, 0, (i-1) * gap)
             p.Anchored = true
             p.CanCollide = false
-            p.Transparency = 0.3
+            p.Transparency = 0.2
             p.BrickColor = BrickColor.new("Bright orange")
             p.Parent = cps
 
@@ -80,7 +66,7 @@ end
 
 local checkpoints = getOrderedCheckpoints(checkpointsFolder)
 if #checkpoints == 0 then
-    warn("[MountPhoenixTeleport] Tidak menemukan checkpoint valid di folder. Buatlah BasePart bernama Checkpoint1, Checkpoint2, ...")
+    warn("[MountPhoenixTeleport] Checkpoint1, Checkpoint2, ...")
 end
 
 -- DataStore: fallback memory table jika Get/Set async gagal (mis. di Studio)
@@ -139,7 +125,7 @@ local function loadPlayerCheckpoint(userId)
 end
 
 -- Teleport helper (server-side)
-local TELEPORT_Y_OFFSET = 3
+local TELEPORT_Y_OFFSET = 2
 local function teleportPlayerToCheckpoint(player, checkpointPart)
     if not player or not player.Character or not checkpointPart or not checkpointPart:IsA("BasePart") then return false end
     local hrp = player.Character:FindFirstChild("HumanoidRootPart")
@@ -157,7 +143,7 @@ local function teleportPlayerToCheckpoint(player, checkpointPart)
     pe.Texture = "rbxassetid://4830978126"
     pe.Lifetime = NumberRange.new(0.25)
     pe.Rate = 200
-    pe.Speed = NumberRange.new(0)
+    pe.Speed = NumberRange.new(1)
     pe.VelocitySpread = 180
     pe.Parent = effect
     pe:Emit(30)
@@ -167,12 +153,12 @@ local function teleportPlayerToCheckpoint(player, checkpointPart)
     end)
 
     -- teleport
-    hrp.CFrame = checkpointPart.CFrame + Vector3.new(0, TELEPORT_Y_OFFSET, 0)
+    hrp.CFrame = checkpointPart.CFrame + Vector3.new(0, TELEPORT_Y_OFFSET, 2)
     return true
 end
 
 -- Cari index checkpoint dari part
-local function findCheckpointIndex(part)
+local function findCheckpointIndex(1)
     for i, cp in ipairs(checkpoints) do
         if cp == part then return i end
     end
